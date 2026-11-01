@@ -6,7 +6,4 @@ dist/
 .DS_Store
 *.tsbuildinfo
 work/
-/docs/*
-!/docs/TESTING.md
-!/docs/VERIFICATION.md
-!/docs/REQUIREMENTS.md
+/docs/
