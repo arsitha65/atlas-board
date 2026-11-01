@@ -6,6 +6,7 @@ dist/
 .DS_Store
 *.tsbuildinfo
 work/
-docs/submission_DRAFT.pdf
-
-/docs/
+/docs/*
+!/docs/TESTING.md
+!/docs/VERIFICATION.md
+!/docs/REQUIREMENTS.md
