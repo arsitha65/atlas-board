@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict';
+import {createClient} from '@supabase/supabase-js';
+if(process.env.RUN_RLS_TESTS!=='1')throw new Error('Opt in with RUN_RLS_TESTS=1. This creates two anonymous test users. Read docs/TESTING.md first.');
+const url=process.env.VITE_SUPABASE_URL,key=process.env.VITE_SUPABASE_ANON_KEY;
+if(!url||!key)throw new Error('Provide .env with the public Supabase URL and key.');
+const make=()=>createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false,detectSessionInUrl:false}});
+const a=make(),b=make(),noauth=make();
+async function ok(p){const r=await p;if(r.error)throw r.error;return r.data;}
+let aid,bid,ta,tb;
+try{
+ aid=(await ok(a.auth.signInAnonymously())).user.id;
+ bid=(await ok(b.auth.signInAnonymously())).user.id;
+ console.log('Test guest IDs to remove afterward:',aid,bid);
+ assert.notEqual(aid,bid);
+ ta=await ok(a.from('tasks').insert({title:'RLS test A',user_id:aid}).select().single());
+ tb=await ok(b.from('tasks').insert({title:'RLS test B',user_id:bid}).select().single());
+ assert.equal((await ok(a.from('tasks').select('id').eq('id',tb.id))).length,0);
+ assert.equal((await ok(b.from('tasks').select('id').eq('id',ta.id))).length,0);
+ const anon=await noauth.from('tasks').select('*');assert(anon.error||anon.data.length===0);
+ assert((await b.from('tasks').insert({title:'Impersonation',user_id:aid})).error);
+ assert.equal((await ok(b.from('tasks').update({title:'Attack'}).eq('id',ta.id).select())).length,0);
+ assert.equal((await ok(b.from('tasks').delete().eq('id',ta.id).select())).length,0);
+ assert((await a.from('tasks').update({user_id:bid}).eq('id',ta.id)).error);
+ assert((await b.from('comments').insert({task_id:ta.id,user_id:bid,body:'Foreign comment'})).error);
+ assert((await b.from('task_activity').insert({task_id:tb.id,user_id:bid,message:'Forged'})).error);
+ const ma=await ok(a.from('team_members').insert({user_id:aid,name:'RLS A',color:'#62694d'}).select().single());
+ const la=await ok(a.from('labels').insert({user_id:aid,name:'RLS A',color:'#62694d'}).select().single());
+ assert.equal((await ok(b.from('team_members').select('id').eq('id',ma.id))).length,0);
+ assert.equal((await ok(b.from('labels').select('id').eq('id',la.id))).length,0);
+ assert((await b.from('tasks').update({assignee_ids:[ma.id]}).eq('id',tb.id)).error);
+ assert((await b.from('tasks').update({label_ids:[la.id]}).eq('id',tb.id)).error);
+ assert((await a.from('tasks').update({assignee_ids:[ma.id,ma.id]}).eq('id',ta.id)).error);
+ assert((await a.from('tasks').update({status:'invalid'}).eq('id',ta.id)).error);
+ assert((await a.from('tasks').update({title:'   '}).eq('id',ta.id)).error);
+ await ok(a.from('tasks').update({status:'done',assignee_ids:[ma.id],label_ids:[la.id]}).eq('id',ta.id));
+ const comment=await ok(a.from('comments').insert({task_id:ta.id,user_id:aid,body:'Own comment'}).select().single());
+ assert.equal((await ok(b.from('comments').select('id').eq('id',comment.id))).length,0);
+ const activity=await ok(a.from('task_activity').select('*').eq('task_id',ta.id));
+ assert(activity.length>=2);
+ assert.equal((await ok(b.from('task_activity').select('id').eq('task_id',ta.id))).length,0);
+ await ok(a.from('tasks').delete().eq('id',ta.id));
+ assert.equal((await ok(a.from('comments').select('id').eq('task_id',ta.id))).length,0);
+ assert.equal((await ok(a.from('task_activity').select('id').eq('task_id',ta.id))).length,0);
+ console.log('PASS: own CRUD, guest isolation, child ownership, immutable audits, validation and cascades.');
+ console.log('Delete the two test auth users in the dashboard to remove the test member and label.');
+}finally{
+ if(ta)await a.from('tasks').delete().eq('id',ta.id);
+ if(tb)await b.from('tasks').delete().eq('id',tb.id);
+ await a.auth.signOut();await b.auth.signOut();
+}
